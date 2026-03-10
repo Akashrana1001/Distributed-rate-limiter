@@ -1,0 +1,24 @@
+{
+  "name": "distributed-rate-limiter",
+  "version": "1.0.0",
+  "description": "A distributed rate limiter using Node.js, Express, and Redis",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "rate-limiter",
+    "distributed",
+    "redis",
+    "express",
+    "nodejs"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ioredis": "^5.4.2"
+  }
+}

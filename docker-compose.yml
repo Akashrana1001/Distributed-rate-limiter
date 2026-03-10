@@ -1,0 +1,64 @@
+# ============================================
+#  Docker Compose — Distributed Rate Limiter
+# ============================================
+#
+# This file runs:
+#   1. A Redis container (shared datastore)
+#   2. Two Node.js server containers (simulating distributed system)
+#
+# Both servers connect to the SAME Redis instance,
+# so rate limits are enforced globally across all servers.
+
+version: "3.8"
+
+services:
+  # --------------------------------------------------
+  # Redis — The shared datastore for rate limit counters
+  # --------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: rate-limiter-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # --------------------------------------------------
+  # Server 1 — First Node.js instance (port 3001)
+  # --------------------------------------------------
+  server1:
+    build: .
+    container_name: rate-limiter-server1
+    ports:
+      - "3001:3000"
+    environment:
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RATE_LIMIT_WINDOW_SEC=60
+      - RATE_LIMIT_MAX_REQUESTS=10
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # --------------------------------------------------
+  # Server 2 — Second Node.js instance (port 3002)
+  # --------------------------------------------------
+  server2:
+    build: .
+    container_name: rate-limiter-server2
+    ports:
+      - "3002:3000"
+    environment:
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RATE_LIMIT_WINDOW_SEC=60
+      - RATE_LIMIT_MAX_REQUESTS=10
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis_data:
