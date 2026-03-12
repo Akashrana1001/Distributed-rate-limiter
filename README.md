@@ -1,309 +1,527 @@
-# 🚦 Distributed Rate Limiter
+# 🚀 Backend Task Queue
 
-A beginner-friendly, production-style **Distributed Rate Limiter** built with **Node.js**, **Express**, **Redis**, and **Docker**.
+A **distributed task queue system** built with **Node.js**, **Express**, **Redis**, and **BullMQ** for processing background jobs asynchronously.
 
-This project demonstrates how to limit API requests **across multiple server instances** using Redis as a shared datastore — a core concept in system design interviews.
-
----
-
-## 📖 Table of Contents
-
-1. [What is Rate Limiting?](#-what-is-rate-limiting)
-2. [What is Distributed Rate Limiting?](#-what-is-distributed-rate-limiting)
-3. [Why Redis?](#-why-redis)
-4. [Fixed Window Algorithm](#-fixed-window-algorithm)
-5. [Architecture Diagram](#-architecture-diagram)
-6. [Project Structure](#-project-structure)
-7. [How to Run](#-how-to-run)
-8. [API Reference](#-api-reference)
-9. [Testing the Rate Limiter](#-testing-the-rate-limiter)
-10. [Environment Variables](#-environment-variables)
+This project demonstrates understanding of asynchronous processing, background workers, queue systems, Redis usage, and scalable backend architecture.
 
 ---
 
-## 🔒 What is Rate Limiting?
+## Tech Stack
 
-**Rate limiting** is a technique to control how many requests a client can make to an API within a given time period.
-
-**Why is it important?**
-
-- 🛡️ **Prevents abuse** — Stops malicious users from overloading your server
-- 💰 **Saves resources** — Protects your server from running out of memory/CPU
-- ⚖️ **Fair usage** — Ensures all users get equal access to the API
-- 🔐 **Security** — Helps prevent brute-force attacks
-
-**Example:** Allow each user a maximum of **10 requests per minute**.
+**Backend:** Node.js, Express  
+**Queue Library:** BullMQ  
+**Caching Layer:** Redis  
+**Containerization:** Docker, Docker Compose  
+**Language:** JavaScript
 
 ---
 
-## 🌐 What is Distributed Rate Limiting?
+## Key Features
 
-In real-world applications, you don't run just one server — you run **multiple instances** behind a load balancer.
-
-**The Problem:**  
-If each server tracks rate limits independently, a user can simply send requests to different servers to bypass the limit.
-
-**The Solution:**  
-Use a **centralized datastore** (Redis) that all servers share. Every server reads and writes rate limit counters to the **same Redis instance**, so limits are enforced **globally**.
-
-```
-Without Redis (broken):                With Redis (correct):
-┌──────────┐  5 reqs   ┌──────────┐   ┌──────────┐  5 reqs   ┌──────────┐
-│  Client  │──────────▶│ Server 1 │   │  Client  │──────────▶│ Server 1 │──┐
-│          │  5 reqs   │ count: 5 │   │          │  5 reqs   │          │  │
-│          │──────────▶│ Server 2 │   │          │──────────▶│ Server 2 │──┤
-│          │           │ count: 5 │   │          │           │          │  │
-└──────────┘           └──────────┘   └──────────┘           └──────────┘  │
-                                                                           │
-User made 10 total,                                           ┌──────────┐ │
-but each server only                                          │  Redis   │◀┘
-counted 5 → NOT blocked!                                      │ count:10 │
-                                                              └──────────┘
-                                                              Total = 10 → BLOCKED!
-```
+- Distributed background job processing across multiple workers
+- Redis-backed queue with persistent job state using BullMQ
+- Priority queue with high, medium, and low priority levels
+- Automatic retries with exponential backoff on job failure
+- Delayed job scheduling — run jobs after a specified time
+- Full job lifecycle tracking: `waiting → active → completed / failed`
+- Dockerized multi-service architecture for consistent environments
 
 ---
 
-## 🗄️ Why Redis?
+## 📋 Table of Contents
 
-| Feature | Why it matters |
-|---------|---------------|
-| **In-memory** | Extremely fast reads/writes (sub-millisecond) |
-| **Atomic operations** | `INCR` command is atomic — no race conditions |
-| **TTL (expiration)** | Keys auto-expire, so counters reset automatically |
-| **Shared state** | Multiple servers can read/write the same data |
-| **Simple** | No complex setup — perfect for rate limiting |
-
----
-
-## ⏱️ Fixed Window Algorithm
-
-The **Fixed Window** algorithm is the simplest rate limiting approach:
-
-```
-Timeline (1-minute windows):
-
-Window 1               Window 2               Window 3
-├───────────────────────├───────────────────────├─────────────
-│ Req1 Req2 ... Req10  │ Req1 Req2 ...        │
-│ ✅   ✅        ✅   │ ✅   ✅              │
-│ Req11 → ❌ 429!     │                       │
-│ Counter resets ──────▶│ Counter = 0           │
-```
-
-**How it works in code:**
-
-1. A request arrives → build the key: `rate_limit:<IP>`
-2. Run `INCR` on the key (atomically increment by 1)
-3. If it's the first request (`count === 1`), set `EXPIRE` to 60 seconds
-4. If `count > 10` → return **HTTP 429**
-5. Otherwise → allow the request
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Setup Instructions](#setup-instructions)
+- [Running the Project](#running-the-project)
+- [API Endpoints](#api-endpoints)
+- [Example API Requests](#example-api-requests)
+- [Priority Queue](#priority-queue)
+- [Automatic Retries](#automatic-retries)
+- [Delayed Jobs](#delayed-jobs)
+- [Job States](#job-states)
+- [Performance Testing](#performance-testing)
+- [Failure Handling](#failure-handling)
+- [Scalability](#scalability)
+- [Future Improvements](#future-improvements)
+- [Demo](#demo)
+- [Technologies Used](#technologies-used)
+- [Author](#author)
 
 ---
 
-## 🏗️ Architecture Diagram
+## Overview
 
-```
-                    ┌─────────────────────────────────────────┐
-                    │              Docker Network              │
-                    │                                          │
-  ┌──────────┐     │  ┌──────────────┐    ┌──────────────┐   │
-  │          │     │  │   Server 1   │    │   Server 2   │   │
-  │  Client  │─────┤  │  (port 3001) │    │  (port 3002) │   │
-  │ (Browser │     │  │              │    │              │   │
-  │  / curl) │     │  │  Express +   │    │  Express +   │   │
-  │          │     │  │  Rate Limiter│    │  Rate Limiter│   │
-  └──────────┘     │  └──────┬───────┘    └──────┬───────┘   │
-                    │         │                    │           │
-                    │         └────────┬───────────┘           │
-                    │                  │                        │
-                    │         ┌────────▼────────┐              │
-                    │         │     Redis       │              │
-                    │         │   (port 6379)   │              │
-                    │         │                 │              │
-                    │         │  rate_limit:IP  │              │
-                    │         │  = request count│              │
-                    │         └─────────────────┘              │
-                    └─────────────────────────────────────────┘
-```
+This project implements a **background job processing system** where:
+
+1. A **REST API** accepts job requests from clients
+2. Jobs are stored in a **Redis-backed queue** using BullMQ
+3. A separate **worker process** picks up jobs and processes them in the background
+4. Clients can check **job status** at any time
+
+### Why is this useful?
+
+In real-world applications, some tasks take a long time to complete (sending emails, processing images, generating reports). Instead of making users wait, these tasks are pushed to a **background queue** and processed asynchronously.
 
 ---
 
-## 📁 Project Structure
+## Architecture
 
 ```
-distributed-rate-limiter/
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│              │  HTTP    │              │  Push   │              │
+│    Client    │ ──────>  │   Express    │ ──────> │    Redis     │
+│  (Browser /  │ <──────  │   API Server │         │    Queue     │
+│   curl)      │  JSON    │  (server.js) │         │              │
+│              │         │              │         │              │
+└──────────────┘         └──────────────┘         └──────┬───────┘
+                                                         │
+                                                         │ Pull
+                                                         ▼
+                                                  ┌──────────────┐
+                                                  │              │
+                                                  │   Worker     │
+                                                  │  Process     │
+                                                  │ (jobWorker)  │
+                                                  │              │
+                                                  └──────────────┘
+```
+
+**How it works:**
+1. Client sends a POST request to add a job (e.g., send email)
+2. The API server pushes the job into the Redis queue
+3. The worker process (running separately) picks up the job
+4. The worker processes the job and updates its status in Redis
+5. Client can query the job status at any time via GET request
+
+---
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Job Queue** | Redis-backed queue using BullMQ |
+| **REST API** | Express endpoints to add and monitor jobs |
+| **Priority Queue** | High, medium, low priority levels |
+| **Automatic Retries** | Failed jobs retry up to 3 times with exponential backoff |
+| **Delayed Jobs** | Schedule jobs to run after a specified delay |
+| **Job Status Tracking** | Track jobs through waiting → active → completed/failed |
+| **Background Workers** | Separate worker process for job execution |
+| **Colored Logging** | Console logs with timestamps and colors |
+| **Docker Support** | Docker Compose file for Redis |
+
+---
+
+## Project Structure
+
+```
+backend-task-queue/
+├── server.js                 # Express API server (entry point)
+├── package.json              # Dependencies and scripts
+├── .env                      # Environment variables
+├── .env.example              # Template for environment variables
+├── docker-compose.yml        # Docker setup for Redis
 │
-├── src/
-│   ├── middleware/
-│   │   └── rateLimiter.js      # Rate limiting middleware (Fixed Window)
-│   │
-│   ├── services/
-│   │   └── redisClient.js      # Redis connection setup
-│   │
-│   ├── routes/
-│   │   └── apiRoutes.js        # API route definitions
-│   │
-│   └── server.js               # Express app entry point
+├── queue/
+│   ├── redisConnection.js    # Shared Redis connection config
+│   └── jobQueue.js           # BullMQ queue setup & job helpers
 │
-├── docker-compose.yml           # Runs Redis + 2 Node servers
-├── Dockerfile                   # Container image for Node app
-├── package.json                 # Dependencies and scripts
-├── .env                         # Environment variables
-├── .dockerignore                # Files to exclude from Docker image
-└── README.md                    # You are here!
+├── workers/
+│   └── jobWorker.js          # Background worker process
+│
+├── jobs/
+│   ├── emailJob.js           # Email job handler (simulated)
+│   └── imageJob.js           # Image processing handler (simulated)
+│
+├── routes/
+│   └── jobRoutes.js          # API route definitions
+│
+├── controllers/
+│   └── jobController.js      # Request handlers (business logic)
+│
+└── utils/
+    └── logger.js             # Colored console logger
 ```
 
 ---
 
-## 🚀 How to Run
+## Setup Instructions
 
 ### Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) installed on your machine
-- [Docker Compose](https://docs.docker.com/compose/install/) (included with Docker Desktop)
+- **Node.js** (v18 or higher) - [Download](https://nodejs.org/)
+- **Redis** - Either via Docker or installed locally
+- **Docker** (optional) - [Download](https://www.docker.com/)
 
-### Steps
-
-**1. Clone the repository:**
+### 1. Clone and Install
 
 ```bash
-git clone <your-repo-url>
-cd distributed-rate-limiter
+# Navigate to the project directory
+cd backend-task-queue
+
+# Install dependencies
+npm install
 ```
 
-**2. Start the entire system with Docker Compose:**
+### 2. Start Redis
+
+**Option A: Using Docker (recommended)**
 
 ```bash
-docker-compose up --build
+docker-compose up -d
 ```
 
-This will start:
+**Option B: Local Redis**
 
-| Service | Container | Port |
-|---------|-----------|------|
-| Redis | rate-limiter-redis | 6379 |
-| Server 1 | rate-limiter-server1 | 3001 |
-| Server 2 | rate-limiter-server2 | 3002 |
-
-**3. Test the API:**
+If you have Redis installed locally, just make sure it's running:
 
 ```bash
-curl http://localhost:3001/api/test
+# On Linux/Mac
+redis-server
+
+# On Windows (via WSL or Redis for Windows)
+redis-server
 ```
 
-**4. Stop everything:**
+### 3. Configure Environment
 
-```bash
-docker-compose down
+The default `.env` file works out of the box for local development:
+
+```env
+PORT=3000
+REDIS_HOST=localhost
+REDIS_PORT=6379
 ```
 
 ---
 
-## 📡 API Reference
+## Running the Project
 
-### `GET /api/test`
+You need **two terminal windows** — one for the API server and one for the worker.
 
-A test endpoint protected by the rate limiter.
+### Terminal 1: Start the API Server
 
-**Success Response (HTTP 200):**
+```bash
+npm start
+```
 
+You should see:
+```
+[SUCCESS] 🚀 Server running on http://localhost:3000
+[INFO]    Health check: http://localhost:3000/health
+[INFO]    Job routes:   http://localhost:3000/jobs
+```
+
+### Terminal 2: Start the Worker
+
+```bash
+npm run worker
+```
+
+You should see:
+```
+[SUCCESS] 🚀 Worker started and listening for jobs...
+[INFO]    Queue: task-queue
+[INFO]    Concurrency: 1
+```
+
+### Development Mode (with auto-reload)
+
+```bash
+npm run dev
+```
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/jobs/email` | Add an email job to the queue |
+| `POST` | `/jobs/image` | Add an image processing job |
+| `GET` | `/jobs/:id` | Get status of a specific job |
+| `GET` | `/jobs` | List all recent jobs |
+| `GET` | `/health` | Health check endpoint |
+
+---
+
+## Example API Requests
+
+### 1. Add an Email Job
+
+```bash
+curl -X POST http://localhost:3000/jobs/email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "user@example.com",
+    "subject": "Welcome!",
+    "body": "Thanks for signing up!",
+    "priority": "high"
+  }'
+```
+
+**Response:**
 ```json
 {
   "success": true,
-  "message": "✅ API request successful!",
+  "message": "Email job added to queue",
   "data": {
-    "serverPort": "3000",
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "clientIP": "172.18.0.1"
+    "jobId": "1",
+    "type": "email",
+    "priority": "high",
+    "delay": 0,
+    "status": "waiting"
   }
 }
 ```
 
-**Rate Limit Exceeded (HTTP 429):**
+### 2. Add an Image Processing Job with Delay
 
+```bash
+curl -X POST http://localhost:3000/jobs/image \
+  -H "Content-Type: application/json" \
+  -d '{
+    "imageUrl": "https://example.com/photo.jpg",
+    "priority": "low",
+    "delay": 10000
+  }'
+```
+
+### 3. Check Job Status
+
+```bash
+curl http://localhost:3000/jobs/1
+```
+
+**Response (completed job):**
 ```json
 {
-  "success": false,
-  "message": "Too Many Requests. Please try again later.",
-  "retryAfter": "45 seconds"
+  "success": true,
+  "data": {
+    "jobId": "1",
+    "type": "email",
+    "state": "completed",
+    "progress": 100,
+    "data": {
+      "to": "user@example.com",
+      "subject": "Welcome!",
+      "body": "Thanks for signing up!"
+    },
+    "attempts": 1,
+    "maxAttempts": 3,
+    "result": {
+      "status": "sent",
+      "to": "user@example.com",
+      "subject": "Welcome!",
+      "sentAt": "2024-01-15T10:30:00.000Z"
+    }
+  }
 }
 ```
 
-**Response Headers:**
+### 4. List All Recent Jobs
 
-| Header | Description | Example |
-|--------|-------------|---------|
-| `X-RateLimit-Limit` | Max requests per window | `10` |
-| `X-RateLimit-Remaining` | Requests left in window | `7` |
-| `X-RateLimit-Reset` | Unix timestamp when window resets | `1705312200` |
+```bash
+curl http://localhost:3000/jobs
+```
 
-### `GET /health`
-
-Health check endpoint (not rate limited).
-
-```json
-{
-  "status": "healthy",
-  "uptime": 120.45
-}
+```bash
+# With custom limit
+curl http://localhost:3000/jobs?limit=5
 ```
 
 ---
 
-## 🧪 Testing the Rate Limiter
+## Priority Queue
 
-### Using curl (Linux/Mac)
+Jobs support three priority levels. Higher priority jobs are processed before lower ones.
 
-Send 11 requests rapidly to see the rate limiter in action:
+| Priority | Numeric Value | Description |
+|----------|--------------|-------------|
+| `high` | 1 | Processed first |
+| `medium` | 5 | Default priority |
+| `low` | 10 | Processed last |
 
-```bash
-for i in $(seq 1 11); do
-  echo "Request $i:"
-  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3001/api/test
-done
-```
-
-### Using PowerShell (Windows)
-
-```powershell
-for ($i = 1; $i -le 11; $i++) {
-  Write-Host "Request $i :" -NoNewline
-  $response = Invoke-WebRequest -Uri http://localhost:3001/api/test -UseBasicParsing -ErrorAction SilentlyContinue
-  Write-Host " HTTP $($response.StatusCode)"
-}
-```
-
-### Expected Output
-
-```
-Request 1:  HTTP 200   ← ✅ Allowed
-Request 2:  HTTP 200   ← ✅ Allowed
-...
-Request 10: HTTP 200   ← ✅ Allowed (last one!)
-Request 11: HTTP 429   ← ❌ Blocked! Too Many Requests
-```
-
-### Test Distributed Behavior
-
-After hitting the limit on **Server 1** (port 3001), immediately try **Server 2** (port 3002):
+**Example:** If you add a `low` priority job and then a `high` priority job, the `high` priority job will be processed first.
 
 ```bash
-curl http://localhost:3002/api/test
-# → Also returns 429! Proves rate limit is shared via Redis.
+# This will be processed SECOND
+curl -X POST http://localhost:3000/jobs/email \
+  -H "Content-Type: application/json" \
+  -d '{"to": "a@test.com", "subject": "Low", "body": "...", "priority": "low"}'
+
+# This will be processed FIRST
+curl -X POST http://localhost:3000/jobs/email \
+  -H "Content-Type: application/json" \
+  -d '{"to": "b@test.com", "subject": "High", "body": "...", "priority": "high"}'
 ```
 
 ---
 
-## ⚙️ Environment Variables
+## Automatic Retries
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Server port |
-| `REDIS_HOST` | `localhost` | Redis hostname |
-| `REDIS_PORT` | `6379` | Redis port |
-| `RATE_LIMIT_WINDOW_SEC` | `60` | Time window in seconds |
-| `RATE_LIMIT_MAX_REQUESTS` | `10` | Max requests per window |
+If a job fails (throws an error), BullMQ automatically retries it up to **3 times** using **exponential backoff**:
+
+| Attempt | Delay Before Retry |
+|---------|-------------------|
+| 1st retry | 2 seconds |
+| 2nd retry | 4 seconds |
+| 3rd retry | 8 seconds |
+
+After all 3 retries are exhausted, the job is marked as **failed**.
+
+The demo jobs randomly fail ~10% of the time so you can see retries in action in the worker logs.
+
+---
+
+## Delayed Jobs
+
+You can schedule a job to start processing after a delay by passing the `delay` parameter (in milliseconds).
+
+```bash
+# This job will start processing after 10 seconds
+curl -X POST http://localhost:3000/jobs/email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "user@example.com",
+    "subject": "Reminder",
+    "body": "Don't forget your meeting!",
+    "delay": 10000
+  }'
+```
+
+The job will be in `delayed` state until the delay expires, then it moves to `waiting` and gets processed normally.
+
+---
+
+## Job States
+
+Each job goes through a lifecycle of states:
+
+```
+  ┌─────────┐     ┌────────┐     ┌───────────┐
+  │ delayed  │ ──> │waiting │ ──> │  active   │
+  └─────────┘     └────────┘     └─────┬─────┘
+                                       │
+                              ┌────────┴────────┐
+                              ▼                 ▼
+                       ┌───────────┐     ┌──────────┐
+                       │ completed │     │  failed   │
+                       └───────────┘     └──────────┘
+                                               │
+                                               ▼ (retry)
+                                         ┌──────────┐
+                                         │ waiting  │
+                                         └──────────┘
+```
+
+| State | Description |
+|-------|-------------|
+| `delayed` | Job is waiting for its delay timer to expire |
+| `waiting` | Job is in the queue, ready to be picked up |
+| `active` | Job is currently being processed by a worker |
+| `completed` | Job finished successfully |
+| `failed` | Job failed after all retry attempts |
+
+---
+
+## Performance Testing
+
+Load testing performed using [k6](https://k6.io/).
+
+### Test Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Virtual Users | 50 |
+| Duration | 30 seconds |
+| Target Endpoint | `POST /jobs/email` |
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Average Latency | _(add your result here)_ |
+| Requests per Second | _(add your result here)_ |
+| Error Rate | _(add your result here)_ |
+
+> **Screenshot:** _(add a screenshot of your k6 terminal output here)_
+
+---
+
+## Failure Handling
+
+- If **Redis is unavailable**, the system fails open and allows requests through to prevent a hard outage.
+- **Timeout protection** is applied on Redis operations to prevent the API from blocking indefinitely.
+- **Rate limiting logic is stateless** on server instances — all state is stored in Redis, making individual servers replaceable.
+- Failed jobs are **automatically retried** up to 3 times with exponential backoff before being marked as failed.
+
+---
+
+## Scalability
+
+The system scales horizontally by adding more API server instances behind a load balancer.  
+All instances share the same **Redis-backed job queue**, ensuring global coordination across distributed nodes.
+
+```
+         ┌─────────────────────────────────┐
+         │          Load Balancer          │
+         └──────────┬───────────┬──────────┘
+                    │           │
+             ┌──────▼───┐ ┌────▼──────┐
+             │ API Node │ │ API Node  │
+             │    #1    │ │    #2     │
+             └──────┬───┘ └────┬──────┘
+                    │          │
+             ┌──────▼──────────▼──────┐
+             │      Redis Queue       │
+             │  (shared state store)  │
+             └────────────┬───────────┘
+                          │
+             ┌────────────▼───────────┐
+             │   Worker Pool          │
+             │  (scales independently)│
+             └────────────────────────┘
+```
+
+---
+
+## Future Improvements
+
+- [ ] Implement **Sliding Window** rate limiting algorithm
+- [ ] Implement **Token Bucket** algorithm
+- [ ] Add **Redis Cluster** support for high availability
+- [ ] Add **Prometheus + Grafana** monitoring dashboard
+- [ ] Add **Kubernetes** deployment manifests
+- [ ] Add **dead-letter queue** for jobs that exceed all retries
+- [ ] Build a **Web UI** for real-time job monitoring
+
+---
+
+## Demo
+
+> **GIF/Screenshot:** _(replace this line with your demo GIF or screenshot)_
+>
+> Suggested recording:
+> - Submit several job requests via `curl` or a REST client
+> - Show jobs progressing through `waiting → active → completed` in worker logs
+> - Demonstrate an automatic retry when a job fails
+
+---
+
+## Technologies Used
+
+| Technology | Purpose |
+|------------|--------|
+| **Node.js** | Runtime environment |
+| **Express.js** | REST API framework |
+| **BullMQ** | Job queue library |
+| **Redis** | In-memory store for queue data |
+| **IORedis** | Redis client for Node.js |
+| **dotenv** | Environment variable management |
+| **Docker** | Containerized Redis setup |
 
 ---
 
@@ -313,13 +531,8 @@ MIT
 
 ---
 
-## ⭐ Interview Talking Points
+## Author
 
-When explaining this project in an interview, highlight:
-
-1. **Why distributed?** — Single-server rate limiting breaks with multiple instances
-2. **Why Redis?** — Atomic operations, TTL support, shared state
-3. **Algorithm choice** — Fixed Window is simple; mention Sliding Window and Token Bucket as alternatives
-4. **Race conditions** — Redis `INCR` is atomic, preventing race conditions
-5. **Fail-open vs Fail-closed** — Currently fails open (allows requests if Redis is down)
-6. **Docker** — Demonstrates understanding of containerization and multi-service orchestration
+**Akash Chauhan**  
+GitHub: [github.com/Akashrana1001](https://github.com/Akashrana1001)  
+LinkedIn: [linkedin.com/in/akashrana100](https://linkedin.com/in/akashrana100)
