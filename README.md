@@ -1,6 +1,27 @@
 # Distributed Rate Limiter
 
-A production-ready distributed rate limiter built with **Node.js**, **Express**, and **Redis**. It uses the **Fixed Window** algorithm to limit API requests per client IP, with Redis as the shared counter store so limits are enforced consistently across multiple server instances.
+![Node.js](https://img.shields.io/badge/Node.js-18-339933?logo=node.js&logoColor=white)
+![Express](https://img.shields.io/badge/Express-4-000000?logo=express&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
+> A production-ready **distributed rate limiter** built with Node.js, Express, and Redis. Enforces per-IP API rate limits across multiple server instances using the **Fixed Window** algorithm and Redis as a shared atomic counter store.
+
+---
+
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Getting Started](#getting-started)
+- [API Endpoints](#api-endpoints)
+- [Response Headers](#response-headers)
+- [Configuration](#configuration)
+- [Testing the Rate Limiter](#testing-the-rate-limiter)
+- [Tech Stack](#tech-stack)
 
 ---
 
@@ -8,112 +29,130 @@ A production-ready distributed rate limiter built with **Node.js**, **Express**,
 
 ### Fixed Window Algorithm
 
-1. Each time window is a fixed duration (default: **60 seconds**).
-2. When a request arrives, the middleware looks up the client IP-based counter in Redis.
-3. If no counter exists, one is created and set to expire after the window duration.
-4. If the counter is below the limit, the request is allowed and the counter is incremented.
-5. If the counter has reached the limit, the request is rejected with **HTTP 429**.
+| Step | What Happens |
+|------|-------------|
+| 1 | A request arrives — the middleware reads the client IP |
+| 2 | Redis is queried for the counter at key `rate_limit:<IP>` |
+| 3 | If the key does not exist, it is created with value `1` and a TTL equal to the window size |
+| 4 | If the counter is **below** the limit, the request is **allowed** and the counter is incremented |
+| 5 | If the counter **exceeds** the limit, the request is **rejected** with `HTTP 429` |
 
-### Why Redis?
+### Why Redis for Rate Limiting?
 
-In a distributed system with multiple server instances, each server needs to share rate limit state. Redis acts as a **centralized, atomic counter store** that all instances read from and write to.
+Without a shared store, each server instance would track its own counter. A user could bypass the limit by spreading requests across different servers.
 
-Without Redis, each server would maintain its own counter � a user could bypass the rate limit simply by spreading requests across different servers.
+Redis solves this by acting as a **single source of truth** — all server instances atomically increment and check the same counter using Redis' native `INCR` command, which is thread-safe and atomic by design.
+
+---
+
+## Architecture
 
 ```
-Client Request
-      �
-      ?
-+-------------+     +-------------+
-�   Server 1  �----?�             �
-�  (port 3001)�     �    Redis    �  ? shared counter store
-�             �     �  (port 6379)�
-�   Server 2  �----?�             �
-�  (port 3002)�     +-------------+
-+-------------+
+                        +------------------+
+  Client (any IP)  -->  |   Load Balancer  |
+                        +--------+---------+
+                                 |
+               +-----------------+-----------------+
+               |                                   |
+    +----------v----------+           +------------v--------+
+    |      Server 1       |           |      Server 2       |
+    |    (port 3001)      |           |    (port 3002)      |
+    |                     |           |                     |
+    |  rateLimiter.js     |           |  rateLimiter.js     |
+    +----------+----------+           +----------+----------+
+               |                                 |
+               +----------------+----------------+
+                                |
+                    +-----------v-----------+
+                    |         Redis         |
+                    |  rate_limit:<IP> = N  |
+                    |  (TTL: window sec)    |
+                    +-----------------------+
 ```
 
-Redis key format: `rate_limit:<IP_ADDRESS>` � for example, `rate_limit:192.168.1.10` holds the request count for that IP with a TTL equal to the window duration.
+Both servers share the **same Redis instance**, so the combined request count across all instances is enforced against a single limit per IP.
+
+**Redis key format:**
+```
+rate_limit:192.168.1.10  -->  value: 7  (TTL: 23s remaining)
+```
 
 ---
 
 ## Project Structure
 
 ```
-+-- src/
-�   +-- server.js                  # Express app entry point
-�   +-- middleware/
-�   �   +-- rateLimiter.js         # Fixed Window rate limiter middleware
-�   +-- routes/
-�   �   +-- apiRoutes.js           # API route definitions
-�   +-- services/
-�       +-- redisClient.js         # Redis connection via ioredis
-+-- Dockerfile                     # Container image for the Node.js server
-+-- docker-compose.yml             # Spins up Redis + 2 server instances
-+-- package.json
+distributed-rate-limiter/
+|-- src/
+|   |-- server.js                  # Express app entry point
+|   |-- middleware/
+|   |   `-- rateLimiter.js         # Fixed Window rate limiting logic
+|   |-- routes/
+|   |   `-- apiRoutes.js           # API route definitions
+|   `-- services/
+|       `-- redisClient.js         # ioredis connection + retry logic
+|-- Dockerfile                     # Node.js container image
+|-- docker-compose.yml             # Redis + 2 server instances
+`-- package.json
 ```
 
 ---
 
 ## Prerequisites
 
-- [Docker](https://www.docker.com/) and Docker Compose  
-  **OR**  
-- Node.js 18+ and a running Redis instance
+- **[Docker](https://www.docker.com/) + Docker Compose** *(recommended)*
+- **OR** Node.js 18+ with a Redis instance running locally
 
 ---
 
 ## Getting Started
 
-### Option 1 � Docker Compose (Recommended)
+### Option 1 — Docker Compose *(Recommended)*
 
-Starts **Redis** and **two Node.js server instances** with a single command:
+Spins up **Redis + two Node.js instances** with a single command:
 
 ```bash
 docker-compose up --build
 ```
 
-| Service  | URL                   |
-|----------|-----------------------|
-| Server 1 | http://localhost:3001 |
-| Server 2 | http://localhost:3002 |
-| Redis    | localhost:6379        |
+| Container | Exposed URL           |
+|-----------|-----------------------|
+| Server 1  | http://localhost:3001 |
+| Server 2  | http://localhost:3002 |
+| Redis     | localhost:6379        |
 
-Both servers connect to the same Redis instance, so rate limits are enforced globally across both.
+Both servers connect to the same Redis container — rate limits are enforced globally.
 
-### Option 2 � Local Development
+### Option 2 — Run Locally
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
+```bash
+# 1. Install dependencies
+npm install
 
-2. Make sure Redis is running locally on port `6379`.
+# 2. Ensure Redis is running on localhost:6379
 
-3. Start the server:
-   ```bash
-   # Production
-   npm start
+# 3. Start in production mode
+npm start
 
-   # Development (auto-restarts on file changes)
-   npm run dev
-   ```
+# OR start in dev mode (auto-restart on file changes)
+npm run dev
+```
 
-The server will start on `http://localhost:3000`.
+Server starts at **http://localhost:3000**.
 
 ---
 
 ## API Endpoints
 
-### `GET /api/test`
+### `GET /api/test` — Rate-Limited Endpoint
 
-A rate-limited endpoint. Use this to verify the rate limiter is working.
+Use this to verify that rate limiting is working correctly.
 
-**Success (200):**
+**Success `200`**
 ```json
 {
   "success": true,
-  "message": "? API request successful!",
+  "message": "API request successful!",
   "data": {
     "serverPort": 3000,
     "timestamp": "2026-03-12T10:00:00.000Z",
@@ -122,7 +161,7 @@ A rate-limited endpoint. Use this to verify the rate limiter is working.
 }
 ```
 
-**Rate Limit Exceeded (429):**
+**Rate Limit Exceeded `429`**
 ```json
 {
   "success": false,
@@ -131,9 +170,11 @@ A rate-limited endpoint. Use this to verify the rate limiter is working.
 }
 ```
 
-### `GET /health`
+---
 
-Health check endpoint � returns server uptime. Useful for Docker health checks and load balancers.
+### `GET /health` — Health Check
+
+Returns server status and uptime. Useful for Docker health checks and load balancers.
 
 ```json
 {
@@ -146,7 +187,7 @@ Health check endpoint � returns server uptime. Useful for Docker health checks
 
 ## Response Headers
 
-Every request to a rate-limited endpoint includes these headers:
+Every response from a rate-limited route includes these headers:
 
 | Header                  | Description                                   |
 |-------------------------|-----------------------------------------------|
@@ -158,53 +199,89 @@ Every request to a rate-limited endpoint includes these headers:
 
 ## Configuration
 
-All settings are controlled via environment variables:
+All settings are passed via environment variables (pre-configured in `docker-compose.yml`):
 
-| Variable                  | Default     | Description                               |
-|---------------------------|-------------|-------------------------------------------|
-| `PORT`                    | `3000`      | Port the Express server listens on        |
-| `REDIS_HOST`              | `localhost` | Redis server hostname                     |
-| `REDIS_PORT`              | `6379`      | Redis server port                         |
-| `RATE_LIMIT_WINDOW_SEC`   | `60`        | Duration of each rate limit window (sec)  |
-| `RATE_LIMIT_MAX_REQUESTS` | `10`        | Max requests allowed per window per IP    |
+| Variable                  | Default     | Description                              |
+|---------------------------|-------------|------------------------------------------|
+| `PORT`                    | `3000`      | Port the Express server listens on       |
+| `REDIS_HOST`              | `localhost` | Redis hostname                           |
+| `REDIS_PORT`              | `6379`      | Redis port                               |
+| `RATE_LIMIT_WINDOW_SEC`   | `60`        | Window duration in seconds               |
+| `RATE_LIMIT_MAX_REQUESTS` | `10`        | Max requests per IP per window           |
 
-When using Docker Compose, these are pre-configured in `docker-compose.yml`.
+To override when running locally, create a `.env` file in the project root:
+
+```env
+PORT=3000
+REDIS_HOST=localhost
+REDIS_PORT=6379
+RATE_LIMIT_WINDOW_SEC=60
+RATE_LIMIT_MAX_REQUESTS=10
+```
 
 ---
 
 ## Testing the Rate Limiter
 
-Send multiple rapid requests to see the limiter in action (Linux/Mac/WSL):
+### Hit the limit on a single server
 
 ```bash
-for i in {1..12}; do curl -i http://localhost:3001/api/test; done
+# Send 12 requests — first 10 pass, last 2 get 429
+for i in {1..12}; do
+  curl -s -o /dev/null -w "Request %d: HTTP %{response_code}\n" http://localhost:3001/api/test
+done
 ```
 
-- Requests 1�10: `200 OK`
-- Requests 11+: `429 Too Many Requests`
+Expected output:
+```
+Request 1:  HTTP 200
+...
+Request 10: HTTP 200
+Request 11: HTTP 429
+Request 12: HTTP 429
+```
 
-**Test distributed enforcement** by alternating between both servers. Because they share Redis, the combined request count is tracked against the same IP:
+### Verify distributed enforcement across both servers
+
+Because both servers share Redis, the **combined** request count triggers the limit:
 
 ```bash
-curl http://localhost:3001/api/test
-curl http://localhost:3002/api/test  # counts against the same IP limit
+# 5 requests to Server 1
+for i in {1..5}; do curl -s -o /dev/null -w "S1 req %d: HTTP %{response_code}\n" http://localhost:3001/api/test; done
+
+# 7 more to Server 2 — will hit 429 after 5 more (total = 10)
+for i in {1..7}; do curl -s -o /dev/null -w "S2 req %d: HTTP %{response_code}\n" http://localhost:3002/api/test; done
+```
+
+### Inspect rate limit headers
+
+```bash
+curl -i http://localhost:3001/api/test
+```
+
+Look for:
+```
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 9
+X-RateLimit-Reset: 1741776060
 ```
 
 ---
 
 ## Tech Stack
 
-| Technology | Role                            |
-|------------|---------------------------------|
-| Node.js 18 | Runtime                         |
-| Express 4  | HTTP server and routing         |
-| Redis 7    | Distributed counter store       |
-| ioredis 5  | Redis client for Node.js        |
-| Docker     | Containerization                |
-| dotenv     | Environment variable management |
+| Technology      | Version | Role                                  |
+|-----------------|---------|---------------------------------------|
+| Node.js         | 18      | JavaScript runtime                    |
+| Express         | 4       | HTTP server and routing               |
+| Redis           | 7       | Distributed atomic counter store      |
+| ioredis         | 5       | Redis client with built-in retry      |
+| Docker          | —       | Containerization                      |
+| Docker Compose  | —       | Multi-container orchestration         |
+| dotenv          | 16      | Environment variable loading          |
 
 ---
 
 ## License
 
-MIT
+[MIT](https://opensource.org/licenses/MIT)
