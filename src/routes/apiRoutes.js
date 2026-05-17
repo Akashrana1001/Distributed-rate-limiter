@@ -14,6 +14,19 @@ const rateLimiter = require("../middleware/rateLimiter");
 const router = express.Router();
 
 /**
+ * @swagger
+ * /api/test:
+ *   get:
+ *     summary: Test API endpoint
+ *     description: A test endpoint protected by the rate limiter middleware.
+ *     responses:
+ *       200:
+ *         description: API request successful
+ *       429:
+ *         description: Rate limit exceeded
+ */
+
+/**
  * GET /api/test
  *
  * A simple test endpoint protected by the rate limiter.
