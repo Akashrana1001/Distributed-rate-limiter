@@ -13,6 +13,8 @@
 require("dotenv").config();
 
 const express = require("express");
+const swaggerUi = require("swagger-ui-express");
+const specs = require("./docs/swagger");
 const apiRoutes = require("./routes/apiRoutes");
 
 // Create the Express application
@@ -27,6 +29,9 @@ app.set("trust proxy", true);
 
 // Parse JSON request bodies (if needed in future routes)
 app.use(express.json());
+console.log("Swagger middleware loading...");
+app.use("/api-docs", swaggerUi.serve);
+app.get("/api-docs", swaggerUi.setup(specs));
 
 // --------------------------------------------------
 // Health check endpoint (useful for Docker health checks)
