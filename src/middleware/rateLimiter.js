@@ -67,7 +67,17 @@ async function rateLimiter(req, res, next) {
         // -----------------------------------------------
         // STEP 4: Get the remaining TTL for the reset header
         // -----------------------------------------------
-        const ttl = await redisClient.ttl(redisKey);
+        // Use Redis TTL as the single source of truth to avoid
+        // clock skew between distributed server instances.
+        // TTL returns:  -1 if no expiry is set, -2 if key doesn't exist
+        let ttl = await redisClient.ttl(redisKey);
+
+        // Guard against edge cases: if the key lost its expiry
+        // (e.g., race condition) or doesn't exist, fall back to
+        // the configured window duration.
+        if (ttl < 0) {
+            ttl = WINDOW_SEC;
+        }
 
         // Calculate how many requests the user has left
         const remaining = Math.max(0, MAX_REQUESTS - currentCount);
@@ -76,6 +86,8 @@ async function rateLimiter(req, res, next) {
         // STEP 5: Set rate limit response headers
         // -----------------------------------------------
         // These headers tell the client about their rate limit status.
+        // X-RateLimit-Reset uses Redis TTL (not a locally computed
+        // timestamp) so all instances return consistent values.
         res.set({
             "X-RateLimit-Limit": MAX_REQUESTS,             // Max allowed requests
             "X-RateLimit-Remaining": remaining,             // Requests left in window
@@ -87,10 +99,13 @@ async function rateLimiter(req, res, next) {
         // -----------------------------------------------
         if (currentCount > MAX_REQUESTS) {
             // User has exceeded the rate limit → send 429
+            // Both the Retry-After header and the JSON body use the
+            // same Redis TTL value so they are always in sync.
+            res.set("Retry-After", ttl);
             return res.status(429).json({
                 success: false,
-                message: "Too Many Requests. Please try again later.",
-                retryAfter: `${ttl} seconds`,
+                message: `Too Many Requests. Please retry after ${ttl} seconds.`,
+                retryAfter: ttl,
             });
         }
 
