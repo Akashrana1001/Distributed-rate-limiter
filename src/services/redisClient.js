@@ -24,6 +24,8 @@ const Redis = require("ioredis");
 // Read Redis connection details from environment variables
 const REDIS_HOST = process.env.REDIS_HOST || "localhost";
 const REDIS_PORT = parseInt(process.env.REDIS_PORT, 10) || 6379;
+const REDIS_RETRY_DELAY = parseInt(process.env.REDIS_RETRY_DELAY, 10) || 200;       
+const REDIS_RETRY_MAX_DELAY = parseInt(process.env.REDIS_RETRY_MAX_DELAY, 10) || 2000; 
 
 // Create a new Redis client instance
 const redisClient = new Redis({
@@ -32,7 +34,7 @@ const redisClient = new Redis({
 
   // Retry connecting if Redis is temporarily unavailable
   retryStrategy(times) {
-    const delay = Math.min(times * 200, 2000); // max 2 second delay
+    const delay = Math.min(times * REDIS_RETRY_DELAY, REDIS_RETRY_MAX_DELAY);  // max 2 second delay
     console.log(`⏳ Retrying Redis connection in ${delay}ms... (attempt ${times})`);
     return delay;
   },
