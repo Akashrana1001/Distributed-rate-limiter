@@ -228,7 +228,8 @@ RATE_LIMIT_MAX_REQUESTS=10
 ```bash
 # Send 12 requests — first 10 pass, last 2 get 429
 for i in {1..12}; do
-  curl -s -o /dev/null -w "Request %d: HTTP %{response_code}\n" http://localhost:3001/api/test
+  # Commit: docs: fix bash variable formatting in curl test command
+  curl -s -o /dev/null -w "Request $i: HTTP %{response_code}\n" http://localhost:3001/api/test
 done
 ```
 
