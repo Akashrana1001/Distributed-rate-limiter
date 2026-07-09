@@ -51,21 +51,19 @@ async function rateLimiter(req, res, next) {
         // -----------------------------------------------
         // STEP 2: Increment the request counter in Redis
         // -----------------------------------------------
-        // Redis INCR atomically increments the value by 1.
-        // If the key doesn't exist, Redis creates it with value 1.
-        const currentCount = await redisClient.incr(redisKey);
+        // Redis executes Lua scripts atomically, so the counter
+        // increment and first-window expiration are applied together.
+        const luaScript = `
+          local count = redis.call('INCR', KEYS[1])
+          if count == 1 then
+            redis.call('EXPIRE', KEYS[1], ARGV[1])
+          end
+          return count
+        `;
+        const currentCount = await redisClient.eval(luaScript, 1, redisKey, WINDOW_SEC);
 
         // -----------------------------------------------
-        // STEP 3: Set expiration on FIRST request only
-        // -----------------------------------------------
-        // When currentCount is 1, this is the first request in a
-        // new window — so we set the key to expire after WINDOW_SEC.
-        if (currentCount === 1) {
-            await redisClient.expire(redisKey, WINDOW_SEC);
-        }
-
-        // -----------------------------------------------
-        // STEP 4: Get the remaining TTL for the reset header
+        // STEP 3: Get the remaining TTL for the reset header
         // -----------------------------------------------
         const ttl = await redisClient.ttl(redisKey);
 
@@ -73,7 +71,7 @@ async function rateLimiter(req, res, next) {
         const remaining = Math.max(0, MAX_REQUESTS - currentCount);
 
         // -----------------------------------------------
-        // STEP 5: Set rate limit response headers
+        // STEP 4: Set rate limit response headers
         // -----------------------------------------------
         // These headers tell the client about their rate limit status.
         res.set({
@@ -83,7 +81,7 @@ async function rateLimiter(req, res, next) {
         });
 
         // -----------------------------------------------
-        // STEP 6: Block or allow the request
+        // STEP 5: Block or allow the request
         // -----------------------------------------------
         if (currentCount > MAX_REQUESTS) {
             // User has exceeded the rate limit → send 429
